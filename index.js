@@ -52,14 +52,32 @@ async function run() {
       }
     });
 
-    app.get("/parcels", async (req, res) => {
+    app.get("/my-parcels", async (req, res) => {
       try {
-        const parcels = await parcelsCollections.find().toArray();
-        res.json(parcels);
+        const email = req.query.email;
+
+        if (!email) {
+          return res.status(400).json({ error: "Email is required" });
+        }
+
+        const userParcels = await parcelsCollections
+          .find({ createdBy: email })
+          .toArray();
+
+        res.json(userParcels);
       } catch (error) {
-        res.status(500).json({ error: "Failed to get parcels" });
+        res.status(500).json({ error: "Failed to fetch user parcels" });
       }
     });
+
+    // app.get("/parcels", async (req, res) => {
+    //   try {
+    //     const parcels = await parcelsCollections.find().toArray();
+    //     res.json(parcels);
+    //   } catch (error) {
+    //     res.status(500).json({ error: "Failed to get parcels" });
+    //   }
+    // });
     // Connect the client to the server	(optional starting in v4.7)
     await client.connect();
     // // Send a ping to confirm a successful connection
