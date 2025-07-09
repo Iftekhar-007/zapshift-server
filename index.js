@@ -2,6 +2,7 @@ const express = require("express");
 const cors = require("cors");
 const app = express();
 const port = process.env.PORT || 5000;
+var admin = require("firebase-admin");
 
 const { MongoClient, ServerApiVersion } = require("mongodb");
 
@@ -16,6 +17,12 @@ app.use(
 );
 app.use(express.json());
 
+var serviceAccount = require("./FB_TOKEN.json");
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+});
+
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@iftekharbases.ulu3uwc.mongodb.net/?retryWrites=true&w=majority&appName=IftekharBases`;
 
 // Create a MongoClient with a MongoClientOptions object to set the Stable API version
@@ -29,7 +36,31 @@ const client = new MongoClient(uri, {
 async function run() {
   try {
     const database = client.db("zapshift");
+
+    const usersCollections = database.collection("users");
     const parcelsCollections = database.collection("parcels");
+
+    const verifyFBToken = async (req, res, next) => {
+      const authHeaders = req.headers.authorization;
+
+      if (!authHeaders) {
+        return res.status(401).send({ message: "unauthorized access" });
+      }
+
+      const token = authHeaders.split(" ")[1];
+
+      if (!token) {
+        return res.status(401).send({ message: "unauthorized access" });
+      }
+
+      try {
+        const decoded = await admin.auth().verifyIdToken(token);
+        req.decoded = decoded;
+        next();
+      } catch {
+        return res.status(401).send({ message: "unauthorized access" });
+      }
+    };
 
     app.post("/parcels", async (req, res) => {
       try {
@@ -52,12 +83,32 @@ async function run() {
       }
     });
 
-    app.get("/my-parcels", async (req, res) => {
+    app.post("/users", async (req, res) => {
+      const email = req.body.email;
+
+      const usersExists = await usersCollections.findOne({ email });
+
+      if (usersExists) {
+        return res
+          .status(202)
+          .send({ message: "users already exists", inserted: false });
+      }
+
+      const user = req.body;
+      const result = await usersCollections.insertOne(user);
+      res.send(result);
+    });
+
+    app.get("/my-parcels", verifyFBToken, async (req, res) => {
       try {
         const email = req.query.email;
 
         if (!email) {
           return res.status(400).json({ error: "Email is required" });
+        }
+
+        if (req.decoded.email !== email) {
+          return res.status(403).send({ message: "forbidden access" });
         }
 
         const userParcels = await parcelsCollections
