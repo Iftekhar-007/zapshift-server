@@ -4,7 +4,7 @@ const app = express();
 const port = process.env.PORT || 5000;
 var admin = require("firebase-admin");
 
-const { MongoClient, ServerApiVersion } = require("mongodb");
+const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
 require("dotenv").config();
 
@@ -39,6 +39,7 @@ async function run() {
 
     const usersCollections = database.collection("users");
     const parcelsCollections = database.collection("parcels");
+    const ridersCollection = database.collection("riders");
 
     const verifyFBToken = async (req, res, next) => {
       const authHeaders = req.headers.authorization;
@@ -99,6 +100,80 @@ async function run() {
       res.send(result);
     });
 
+    app.post("/riders", async (req, res) => {
+      try {
+        const rider = req.body;
+
+        // const email = req.decoded.email;
+
+        // // Validate and insert logic here...
+
+        // rider.email = email; // enforce email from token
+        // rest is same...
+
+        // Basic validation
+        // if (
+        //   !rider.name ||
+        //   !rider.email ||
+        //   !rider.phone ||
+        //   !rider.region ||
+        //   !rider.district ||
+        //   !rider.bikeName ||
+        //   !rider.bikeLicense
+        // ) {
+        //   return res
+        //     .status(400)
+        //     .json({ message: "Missing required rider fields" });
+        // }
+
+        // Add default values
+        rider.status = "pending";
+        rider.appliedAt = new Date();
+
+        const result = await ridersCollection.insertOne(rider);
+        res.status(201).json({
+          message: "Rider application submitted",
+          insertedId: result.insertedId,
+        });
+      } catch (error) {
+        console.error("Error adding rider:", error);
+        res
+          .status(500)
+          .json({ message: "Failed to submit rider", error: error.message });
+      }
+    });
+
+    app.get("/riders/pending", async (req, res) => {
+      try {
+        const pendingRiders = await ridersCollection
+          .find({ status: "pending" })
+          .toArray();
+        res.status(200).json(pendingRiders);
+      } catch (error) {
+        console.error("Error fetching pending riders:", error);
+        res.status(500).json({ error: "Failed to fetch pending riders" });
+      }
+    });
+
+    // Approve rider
+    app.patch("/riders/approve/:id", async (req, res) => {
+      const id = req.params.id;
+      const result = await ridersCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { status: "approved" } }
+      );
+      res.send(result);
+    });
+
+    // Cancel rider
+    app.delete("/riders/cancel/:id", async (req, res) => {
+      const id = req.params.id;
+      const result = await ridersCollection.deleteOne({
+        _id: new ObjectId(id),
+      });
+      res.send(result);
+    });
+
     app.get("/my-parcels", verifyFBToken, async (req, res) => {
       try {
         const email = req.query.email;
@@ -121,14 +196,26 @@ async function run() {
       }
     });
 
-    // app.get("/parcels", async (req, res) => {
-    //   try {
-    //     const parcels = await parcelsCollections.find().toArray();
-    //     res.json(parcels);
-    //   } catch (error) {
-    //     res.status(500).json({ error: "Failed to get parcels" });
-    //   }
-    // });
+    app.get("/riders/active", async (req, res) => {
+      try {
+        const activeRiders = await database
+          .collection("riders")
+          .find({ status: "approved" })
+          .toArray();
+        res.json(activeRiders);
+      } catch (error) {
+        res.status(500).json({ error: "Failed to fetch active riders" });
+      }
+    });
+
+    app.get("/parcels", async (req, res) => {
+      try {
+        const parcels = await parcelsCollections.find().toArray();
+        res.json(parcels);
+      } catch (error) {
+        res.status(500).json({ error: "Failed to get parcels" });
+      }
+    });
     // Connect the client to the server	(optional starting in v4.7)
     await client.connect();
     // // Send a ping to confirm a successful connection
