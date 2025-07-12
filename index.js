@@ -2,9 +2,8 @@ const express = require("express");
 const cors = require("cors");
 const app = express();
 const port = process.env.PORT || 5000;
-var admin = require("firebase-admin");
-
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
+var admin = require("firebase-admin");
 
 require("dotenv").config();
 
@@ -35,6 +34,9 @@ const client = new MongoClient(uri, {
 });
 async function run() {
   try {
+    // Connect the client to the server	(optional starting in v4.7)
+    await client.connect();
+    console.log("mongodb connected");
     const database = client.db("zapshift");
 
     const usersCollections = database.collection("users");
@@ -61,6 +63,19 @@ async function run() {
       } catch {
         return res.status(401).send({ message: "unauthorized access" });
       }
+    };
+
+    const verifyAdmin = async (req, res, next) => {
+      const email = req.decoded.email;
+      const query = { email };
+
+      const user = await usersCollections.findOne(query);
+
+      if (!user || user.role !== "admin") {
+        res.status(403).send({ message: "forbidden access" });
+      }
+
+      next();
     };
 
     app.post("/parcels", async (req, res) => {
@@ -143,7 +158,7 @@ async function run() {
       }
     });
 
-    app.get("/riders/pending", async (req, res) => {
+    app.get("/riders/pending", verifyFBToken, verifyAdmin, async (req, res) => {
       try {
         const pendingRiders = await ridersCollection
           .find({ status: "pending" })
@@ -155,15 +170,59 @@ async function run() {
       }
     });
 
+    app.patch("/users/make-admin/:email", verifyFBToken, async (req, res) => {
+      const requesterEmail = req.decoded.email;
+      const requester = await usersCollections.findOne({
+        email: requesterEmail,
+      });
+
+      if (requester.role !== "admin") {
+        return res.status(403).send({ message: "Forbidden: Admins only" });
+      }
+
+      const targetEmail = req.params.email;
+      const result = await usersCollections.updateOne(
+        { email: targetEmail },
+        { $set: { role: "admin" } }
+      );
+      res.send(result);
+    });
+
     // Approve rider
     app.patch("/riders/approve/:id", async (req, res) => {
       const id = req.params.id;
+      const { email } = req.body;
       const result = await ridersCollection.updateOne(
         { _id: new ObjectId(id) },
         { $set: { status: "approved" } }
       );
+
+      if (email) {
+        const userResult = await usersCollections.updateOne(
+          { email: email },
+          { $set: { role: "rider" } }
+        );
+        console.log("User role updated:", userResult);
+      } else {
+        console.warn("No email provided to update user role");
+      }
+
       res.send(result);
     });
+
+    app.get(
+      "/users/role/:email",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        const email = req.params.email;
+        const user = await usersCollections.findOne({ email });
+
+        if (!user) return res.status(404).send({ role: "user" }); // fallback
+
+        res.send({ role: user.role || "user" }); // <== must send as object with `role` key
+      }
+    );
 
     // Cancel rider
     app.delete("/riders/cancel/:id", async (req, res) => {
@@ -196,7 +255,7 @@ async function run() {
       }
     });
 
-    app.get("/riders/active", async (req, res) => {
+    app.get("/riders/active", verifyFBToken, verifyAdmin, async (req, res) => {
       try {
         const activeRiders = await database
           .collection("riders")
@@ -216,8 +275,46 @@ async function run() {
         res.status(500).json({ error: "Failed to get parcels" });
       }
     });
-    // Connect the client to the server	(optional starting in v4.7)
-    await client.connect();
+
+    // Search users
+    app.get("/users/search", async (req, res) => {
+      const search = req.query.q;
+      console.log("Search query received:", search); // Debug log
+      if (!search || search.trim() === "") {
+        return res.status(400).send({ message: "Search query required" });
+      }
+      const users = await usersCollections
+        .find({
+          $or: [
+            { email: { $regex: search, $options: "i" } },
+            { name: { $regex: search, $options: "i" } },
+          ],
+        })
+        .limit(10)
+        .toArray();
+      res.send(users);
+    });
+
+    // Make Admin
+    app.patch("/users/make-admin/:email", async (req, res) => {
+      const email = req.params.email;
+      const result = await usersCollections.updateOne(
+        { email },
+        { $set: { role: "admin" } }
+      );
+      res.send(result);
+    });
+
+    // Remove Admin
+    app.patch("/users/remove-admin/:email", async (req, res) => {
+      const email = req.params.email;
+      const result = await usersCollections.updateOne(
+        { email },
+        { $set: { role: "user" } }
+      );
+      res.send(result);
+    });
+
     // // Send a ping to confirm a successful connection
     // await client.db("admin").command({ ping: 1 });
     // console.log(
@@ -227,13 +324,13 @@ async function run() {
     // Ensures that the client will close when you finish/error
     // await client.close();
   }
+
+  app.get("/", (req, res) => {
+    res.send("🚚 Delivery Server is Running!");
+  });
+
+  app.listen(port, () => {
+    console.log(`🚀 Server is running on http://localhost:${port}`);
+  });
 }
 run().catch(console.dir);
-
-app.get("/", (req, res) => {
-  res.send("🚚 Delivery Server is Running!");
-});
-
-app.listen(port, () => {
-  console.log(`🚀 Server is running on http://localhost:${port}`);
-});
