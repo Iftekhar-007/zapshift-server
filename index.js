@@ -213,7 +213,7 @@ async function run() {
     app.get(
       "/users/role/:email",
       verifyFBToken,
-      verifyAdmin,
+
       async (req, res) => {
         const email = req.params.email;
         const user = await usersCollections.findOne({ email });
@@ -267,13 +267,76 @@ async function run() {
       }
     });
 
+    // 📦 GET /riders/tasks?email=rider@gmail.com
+    app.get("/riders/tasks", async (req, res) => {
+      const email = req.query.email;
+
+      if (!email) {
+        return res.status(400).send({ message: "Rider email is required" });
+      }
+
+      try {
+        const tasks = await parcelsCollections
+          .find({
+            assignedRiderEmail: email,
+            deliveryStatus: { $in: ["rider-assigned", "in-transit"] },
+          })
+          .toArray();
+
+        res.status(200).send(tasks);
+      } catch (err) {
+        console.error("❌ Failed to fetch rider tasks:", err);
+        res.status(500).send({ message: "Internal server error" });
+      }
+    });
+
+    app.patch("/parcels/assign-rider/:id", async (req, res) => {
+      const id = req.params.id;
+      const { assignedRiderId, assignedRiderName, assignedRiderEmail } =
+        req.body;
+
+      const result = await parcelsCollections.updateOne(
+        { _id: new ObjectId(id) },
+        {
+          $set: {
+            assignedRiderId,
+            assignedRiderName,
+            assignedRiderEmail,
+            deliveryStatus: "rider-assigned", // ✅ NEW
+          },
+        }
+      );
+
+      res.send(result);
+    });
+
     app.get("/parcels", async (req, res) => {
       try {
-        const parcels = await parcelsCollections.find().toArray();
+        const { paymentStatus, deliveryStatus } = req.query;
+        const query = {};
+        // if (email) (query.email = "created by :"), email;
+        if (paymentStatus) query.paymentStatus = paymentStatus;
+        if (deliveryStatus) query.deliveryStatus = deliveryStatus;
+
+        const parcels = await parcelsCollections.find(query).toArray();
+        console.log(query);
         res.json(parcels);
       } catch (error) {
         res.status(500).json({ error: "Failed to get parcels" });
       }
+    });
+
+    // PATCH /parcels/:id/status
+    app.patch("/parcels/:id/status", async (req, res) => {
+      const id = req.params.id;
+      const { deliveryStatus } = req.body;
+
+      const result = await parcelsCollections.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { deliveryStatus } }
+      );
+
+      res.send(result);
     });
 
     // Search users
