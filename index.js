@@ -3,6 +3,8 @@ const cors = require("cors");
 const app = express();
 const port = process.env.PORT || 5000;
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
+const addTrackingLog = require("./utils/addTrackingLog");
+
 var admin = require("firebase-admin");
 
 require("dotenv").config();
@@ -42,6 +44,7 @@ async function run() {
     const usersCollections = database.collection("users");
     const parcelsCollections = database.collection("parcels");
     const ridersCollection = database.collection("riders");
+    const trackingLogs = database.collection("trackingLogs");
 
     const verifyFBToken = async (req, res, next) => {
       const authHeaders = req.headers.authorization;
@@ -109,6 +112,48 @@ async function run() {
           .json({ message: "Parcel added", insertedId: result.insertedId });
       } catch (error) {
         res.status(500).json({ error: "Failed to add parcel" });
+      }
+    });
+
+    app.post("/track/logs", verifyFBToken, async (req, res) => {
+      const { trackingId, parcelId, status, message } = req.body;
+
+      if (!trackingId || !parcelId || !status || !message) {
+        return res.status(400).send({ message: "Missing required fields" });
+      }
+
+      try {
+        await addTrackingLog({
+          db: database,
+          trackingId,
+          parcelId,
+          status,
+          message,
+        });
+        res.send({ message: "Tracking log added" });
+      } catch (err) {
+        console.error("Tracking log POST failed:", err);
+        res.status(500).send({ message: "Internal server error" });
+      }
+    });
+
+    // ✅ API to get tracking logs by trackingId
+    app.get("/track/logs/:trackingId", async (req, res) => {
+      try {
+        const { trackingId } = req.params;
+        const logs = await trackingLogs
+          .find({ trackingId })
+          .sort({ timestamp: 1 })
+          .toArray();
+
+        if (!logs.length) {
+          return res.status(404).send({ message: "No tracking logs found" });
+        }
+
+        res.send(logs);
+      } catch (err) {
+        console.error("Tracking log error:", err);
+        res.status(500).send({ message: "Internal server error" });
       }
     });
 
@@ -310,10 +355,8 @@ async function run() {
       verifyRider,
       async (req, res) => {
         const email = req.query.email;
-
-        if (!email) {
+        if (!email)
           return res.status(400).send({ message: "Rider email is required" });
-        }
 
         try {
           const completed = await parcelsCollections
@@ -328,6 +371,196 @@ async function run() {
           res.status(200).send(completed);
         } catch (err) {
           console.error("❌ Failed to fetch completed deliveries:", err);
+          res.status(500).send({ message: "Internal server error" });
+        }
+      }
+    );
+
+    // Add this POST route to your Express server
+    app.patch(
+      "/riders/cashout",
+      verifyFBToken,
+      verifyRider,
+      async (req, res) => {
+        const email = req.decoded.email;
+        const { amount, parcelId } = req.body;
+
+        if (!amount || typeof amount !== "number" || amount <= 0 || !parcelId) {
+          return res.status(400).send({ message: "Invalid request" });
+        }
+
+        try {
+          // 1. Find parcel
+          const parcel = await parcelsCollections.findOne({
+            _id: new ObjectId(parcelId),
+          });
+          if (!parcel)
+            return res.status(404).send({ message: "Parcel not found" });
+
+          // 2. Validate parcel cashout state
+          if (parcel.isCashedOut) {
+            return res.status(400).send({ message: "Already cashed out" });
+          }
+
+          // 3. Calculate expected earning
+          const expectedAmount =
+            parcel.senderDistrict === parcel.receiverDistrict ? 80 : 150;
+          if (amount !== expectedAmount) {
+            return res.status(400).send({ message: "Invalid cashout amount" });
+          }
+
+          // 4. Get rider
+          const rider = await ridersCollection.findOne({ email });
+          if (!rider)
+            return res.status(404).send({ message: "Rider not found" });
+
+          // 5. Get total earnings from parcels
+          const completedParcels = await parcelsCollections
+            .find({
+              assignedRiderEmail: email,
+              deliveryStatus: {
+                $in: ["delivered", "service_center_delivered"],
+              },
+            })
+            .toArray();
+
+          const totalEarned = completedParcels.reduce(
+            (sum, p) =>
+              sum + (p.senderDistrict === p.receiverDistrict ? 80 : 150),
+            0
+          );
+
+          const alreadyCashedOut = rider.totalCashedOut || 0;
+          const pending = totalEarned - alreadyCashedOut;
+
+          if (pending < expectedAmount) {
+            return res.status(400).send({ message: "Insufficient balance" });
+          }
+
+          // ✅ 6. Update rider cashout
+          await ridersCollection.updateOne(
+            { email },
+            {
+              $inc: { totalCashedOut: expectedAmount },
+              $push: {
+                cashoutHistory: {
+                  amount: expectedAmount,
+                  date: new Date(),
+                  parcelId,
+                },
+              },
+            }
+          );
+
+          // ✅ 7. Mark parcel as cashed out
+          await parcelsCollections.updateOne(
+            { _id: new ObjectId(parcelId) },
+            { $set: { isCashedOut: true } }
+          );
+
+          res.send({ message: "Cashout successful", amount: expectedAmount });
+        } catch (err) {
+          console.error("Cashout error:", err);
+          res.status(500).send({ message: "Internal Server Error" });
+        }
+      }
+    );
+
+    app.get(
+      "/riders/earning-summary",
+      verifyFBToken,
+      verifyRider,
+      async (req, res) => {
+        // const email = req.decoded.email;
+        // const email = req.query.email || req.decoded.email;
+        const email = req.decoded.email;
+        // const deliveredTime = new Date(p.deliveredTime);
+
+        try {
+          const completed = await parcelsCollections
+            .find({
+              assignedRiderEmail: email,
+              deliveryStatus: {
+                $in: ["delivered", "service_center_delivered"],
+              },
+            })
+            .toArray();
+
+          const totalEarning = completed.reduce(
+            (sum, p) =>
+              sum + (p.senderDistrict === p.receiverDistrict ? 80 : 150),
+            0
+          );
+
+          const rider = await ridersCollection.findOne({ email });
+
+          const totalCashedOut = rider?.totalCashedOut || 0;
+          const pending = totalEarning - totalCashedOut;
+
+          const now = new Date();
+          const startOfToday = new Date(
+            now.getFullYear(),
+            now.getMonth(),
+            now.getDate()
+          );
+          const startOfWeek = new Date(now);
+          startOfWeek.setDate(now.getDate() - now.getDay()); // Sunday
+          const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+
+          const filterByTime = (parcels, startTime) =>
+            parcels.filter((p) => {
+              const deliveredTime = new Date(p.deliveredTime);
+              return deliveredTime >= startTime;
+            });
+
+          const todayEarn = filterByTime(completed, startOfToday).reduce(
+            (sum, p) =>
+              sum + (p.senderDistrict === p.receiverDistrict ? 80 : 150),
+            0
+          );
+
+          const weeklyEarn = filterByTime(completed, startOfWeek).reduce(
+            (sum, p) =>
+              sum + (p.senderDistrict === p.receiverDistrict ? 80 : 150),
+            0
+          );
+
+          const monthlyEarn = filterByTime(completed, startOfMonth).reduce(
+            (sum, p) =>
+              sum + (p.senderDistrict === p.receiverDistrict ? 80 : 150),
+            0
+          );
+
+          // res.send({
+          //   totalEarning,
+          //   totalCashedOut,
+          //   pending,
+          //   todayEarn,
+          //   weeklyEarn,
+          //   monthlyEarn,
+          // });
+
+          // res.send({
+          //   totalEarning: 500,
+          //   totalCashedOut: 100,
+          //   pending: 400,
+          //   todayEarn: 80,
+          //   weeklyEarn: 240,
+          //   monthlyEarn: 480,
+          // });
+
+          console.log("/riders/earnings-summary hit");
+
+          res.send({
+            totalEarning,
+            totalCashedOut,
+            pendingAmount: totalEarning - totalCashedOut,
+            todayEarning: todayEarn,
+            weeklyEarning: weeklyEarn,
+            monthlyEarning: monthlyEarn,
+          });
+        } catch (err) {
+          console.error("Earning summary error:", err);
           res.status(500).send({ message: "Internal server error" });
         }
       }
@@ -374,9 +607,22 @@ async function run() {
       const id = req.params.id;
       const { deliveryStatus } = req.body;
 
+      const updateData = { deliveryStatus };
+
+      if (deliveryStatus === "in-transit") {
+        updateData.pickupTime = new Date(); // ✅ add pickup time
+      }
+
+      if (
+        deliveryStatus === "delivered" ||
+        deliveryStatus === "service_center_delivered"
+      ) {
+        updateData.deliveredTime = new Date(); // ✅ add delivery time
+      }
+
       const result = await parcelsCollections.updateOne(
         { _id: new ObjectId(id) },
-        { $set: { deliveryStatus } }
+        { $set: updateData }
       );
 
       res.send(result);
