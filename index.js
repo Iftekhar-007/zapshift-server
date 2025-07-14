@@ -78,6 +78,19 @@ async function run() {
       next();
     };
 
+    const verifyRider = async (req, res, next) => {
+      const email = req.decoded.email;
+      const query = { email };
+
+      const user = await usersCollections.findOne(query);
+
+      if (!user || user.role !== "rider") {
+        res.status(403).send({ message: "forbidden access" });
+      }
+
+      next();
+    };
+
     app.post("/parcels", async (req, res) => {
       try {
         const parcel = req.body;
@@ -268,7 +281,7 @@ async function run() {
     });
 
     // 📦 GET /riders/tasks?email=rider@gmail.com
-    app.get("/riders/tasks", async (req, res) => {
+    app.get("/riders/tasks", verifyFBToken, verifyRider, async (req, res) => {
       const email = req.query.email;
 
       if (!email) {
@@ -289,6 +302,36 @@ async function run() {
         res.status(500).send({ message: "Internal server error" });
       }
     });
+
+    // ✅ GET completed deliveries for a rider
+    app.get(
+      "/riders/completed-deliveries",
+      verifyFBToken,
+      verifyRider,
+      async (req, res) => {
+        const email = req.query.email;
+
+        if (!email) {
+          return res.status(400).send({ message: "Rider email is required" });
+        }
+
+        try {
+          const completed = await parcelsCollections
+            .find({
+              assignedRiderEmail: email,
+              deliveryStatus: {
+                $in: ["delivered", "service_center_delivered"],
+              },
+            })
+            .toArray();
+
+          res.status(200).send(completed);
+        } catch (err) {
+          console.error("❌ Failed to fetch completed deliveries:", err);
+          res.status(500).send({ message: "Internal server error" });
+        }
+      }
+    );
 
     app.patch("/parcels/assign-rider/:id", async (req, res) => {
       const id = req.params.id;
