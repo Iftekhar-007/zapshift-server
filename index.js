@@ -44,6 +44,7 @@ async function run() {
     const usersCollections = database.collection("users");
     const parcelsCollections = database.collection("parcels");
     const ridersCollection = database.collection("riders");
+    const paymentsCollections = database.collection("payments");
     const trackingLogs = database.collection("trackingLogs");
 
     const verifyFBToken = async (req, res, next) => {
@@ -115,6 +116,69 @@ async function run() {
         });
       } catch (error) {
         res.status(500).json({ error: "Failed to add parcel" });
+      }
+    });
+
+    app.post("/payments", verifyFBToken, async (req, res) => {
+      try {
+        const { parcelId, amount, transactionId } = req.body;
+        const email = req.decoded.email;
+
+        // 1️⃣ Update parcel payment status
+        const updateResult = await parcelsCollections.updateOne(
+          { _id: new ObjectId(parcelId) },
+          {
+            $set: {
+              paymentStatus: "paid",
+              paymentTime: new Date(),
+            },
+          }
+        );
+
+        // 2️⃣ Insert into payments collection
+        const paymentInfo = {
+          email,
+          // userRole,
+          parcelId,
+          amount,
+          transactionId,
+          paidAt: new Date(),
+        };
+
+        // const paymentsCollection = client.db("zapshift").collection("payments");
+        const insertResult = await paymentsCollections.insertOne(paymentInfo);
+
+        res.send({
+          message: "Payment recorded successfully",
+          updateResult,
+          insertResult,
+        });
+      } catch (err) {
+        console.error("💥 Payment saving error:", err);
+        res.status(500).send({ message: "Internal Server Error" });
+      }
+    });
+
+    app.get("/payments", verifyFBToken, async (req, res) => {
+      try {
+        const email = req.decoded.email;
+
+        const user = await usersCollections.findOne({ email });
+        // const paymentsCollection = client.db("zapshift").collection("payments");
+
+        let query = {};
+        if (user?.role !== "admin") {
+          query.email = email;
+        }
+
+        const history = await paymentsCollections
+          .find(query)
+          .sort({ paidAt: -1 })
+          .toArray();
+        res.send(history);
+      } catch (err) {
+        console.error("Payment history fetch error:", err);
+        res.status(500).send({ message: "Internal Server Error" });
       }
     });
 
