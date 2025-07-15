@@ -3,11 +3,11 @@ const cors = require("cors");
 const app = express();
 const port = process.env.PORT || 5000;
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
+require("dotenv").config();
+const stripe = require("stripe")(process.env.DB_PAYMENT_KEY);
 const addTrackingLog = require("./utils/addTrackingLog");
 
 var admin = require("firebase-admin");
-
-require("dotenv").config();
 
 // Middlewares
 app.use(
@@ -605,6 +605,29 @@ async function run() {
       }
     });
 
+    app.get("/parcels/:id", async (req, res) => {
+      try {
+        const id = req.params.id;
+
+        // Validate ID
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).json({ error: "Invalid parcel ID" });
+        }
+
+        const parcel = await parcelsCollections.findOne({
+          _id: new ObjectId(id),
+        });
+
+        if (!parcel) {
+          return res.status(404).json({ error: "Parcel not found" });
+        }
+
+        res.json(parcel);
+      } catch (error) {
+        res.status(500).json({ error: "Something went wrong" });
+      }
+    });
+
     // PATCH /parcels/:id/status
     app.patch("/parcels/:id/status", async (req, res) => {
       const id = req.params.id;
@@ -668,6 +691,20 @@ async function run() {
         { $set: { role: "user" } }
       );
       res.send(result);
+    });
+
+    app.post("/create-payment-intent", async (req, res) => {
+      const amountInCents = req.body.amountInCents;
+      try {
+        const paymentIntent = await stripe.paymentIntents.create({
+          amount: amountInCents, // Amount in cents
+          currency: "usd",
+          payment_method_types: ["card"],
+        });
+        res.json({ clientSecret: paymentIntent.client_secret });
+      } catch (error) {
+        res.status(500).json({ error: error.message });
+      }
     });
 
     // // Send a ping to confirm a successful connection
