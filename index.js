@@ -107,9 +107,12 @@ async function run() {
         // parcel.status = "pending";
 
         const result = await parcelsCollections.insertOne(parcel);
-        res
-          .status(201)
-          .json({ message: "Parcel added", insertedId: result.insertedId });
+        res.status(201).json({
+          message: "Parcel added",
+          insertedId: result.insertedId,
+          _id: result.insertedId, // <- for safety
+          trackingId: parcel.trackingId, // <- send back for logging
+        });
       } catch (error) {
         res.status(500).json({ error: "Failed to add parcel" });
       }
